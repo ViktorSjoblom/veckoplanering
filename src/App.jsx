@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChefHat, ShoppingBasket, Plus, Trash2, X, Check, Edit3, Calendar, Minus, ArrowLeft, Clock } from 'lucide-react';
+import { ChefHat, ShoppingBasket, Plus, Trash2, X, Check, Edit3, Calendar, Minus, ArrowLeft, Clock, Share2 } from 'lucide-react';
 
 // ============== STORAGE POLYFILL ==============
 // Wraps localStorage to match the Claude artifact storage API used elsewhere in this file.
@@ -2094,6 +2094,7 @@ export default function App() {
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [editingRecipe, setEditingRecipe] = useState(null);
   const [showDayPicker, setShowDayPicker] = useState(null);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Load from storage
@@ -2288,6 +2289,7 @@ export default function App() {
             recipes={recipes}
             onPickDay={setShowDayPicker}
             onClearWeek={clearWeek}
+            onShare={() => setShowShareModal(true)}
             onViewRecipe={(r) => { setSelectedRecipe(r); setView('recipe-detail'); }}
           />
         )}
@@ -2447,12 +2449,22 @@ export default function App() {
           onClose={() => setShowDayPicker(null)}
         />
       )}
+
+      {/* Share modal */}
+      {showShareModal && (
+        <ShareModal
+          weekPlan={weekPlan}
+          recipes={recipes}
+          shoppingList={buildShoppingList()}
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
     </div>
   );
 }
 
 // ============== WEEK VIEW ==============
-function WeekView({ weekPlan, recipes, onPickDay, onClearWeek, onViewRecipe }) {
+function WeekView({ weekPlan, recipes, onPickDay, onClearWeek, onShare, onViewRecipe }) {
   const plannedCount = Object.keys(weekPlan).length;
 
   return (
@@ -2467,7 +2479,12 @@ function WeekView({ weekPlan, recipes, onPickDay, onClearWeek, onViewRecipe }) {
           </p>
         </div>
         {plannedCount > 0 && (
-          <button onClick={onClearWeek} style={styles.linkBtn}>Rensa</button>
+          <div style={styles.weekActions}>
+            <button onClick={onShare} style={styles.iconBtn} aria-label="Dela">
+              <Share2 size={18} strokeWidth={2} />
+            </button>
+            <button onClick={onClearWeek} style={styles.linkBtn}>Rensa</button>
+          </div>
         )}
       </div>
 
@@ -3048,8 +3065,182 @@ function ShoppingView({ list, checked, onToggle, extras, onAddExtra, onToggleExt
   );
 }
 
+// ============== SHARE MODAL ==============
+function ShareModal({ weekPlan, recipes, shoppingList, onClose }) {
+  const [step, setStep] = useState('options'); // 'options' | 'preview'
+  const [previewText, setPreviewText] = useState('');
+  const [status, setStatus] = useState(null); // null | 'copied' | 'error'
+  const textareaRef = React.useRef(null);
+
+  const buildMenuText = () => {
+    const lines = ['🍽️ Veckans meny', ''];
+    DAYS.forEach((day, i) => {
+      const recipe = recipes.find(r => r.id === weekPlan[i]);
+      lines.push(`${day}: ${recipe ? recipe.name : '—'}`);
+    });
+    return lines.join('\n');
+  };
+
+  const buildFullText = () => {
+    let text = buildMenuText();
+    if (shoppingList.length > 0) {
+      text += '\n\n🛒 Inköpslista\n';
+      shoppingList.forEach(item => {
+        text += `\n• ${formatAmount(item.amount)} ${item.unit} ${item.name}`;
+      });
+    }
+    return text;
+  };
+
+  const showPreview = (text) => {
+    setPreviewText(text);
+    setStep('preview');
+    setStatus(null);
+  };
+
+  // Robust copy: try modern API, then execCommand fallback
+  const copyToClipboard = async (text) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (e) {
+        // fall through to legacy method
+      }
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(previewText);
+    setStatus(ok ? 'copied' : 'error');
+    if (ok) setTimeout(() => onClose(), 1200);
+  };
+
+  const handleShare = async () => {
+    if (!navigator.share) return;
+    try {
+      await navigator.share({ text: previewText });
+      onClose();
+    } catch (e) {
+      // User cancelled or failed - do nothing
+    }
+  };
+
+  return (
+    <div style={styles.modalBackdrop} onClick={onClose}>
+      <div style={styles.modalSheet} onClick={(e) => e.stopPropagation()}>
+        <div style={styles.modalHeader}>
+          <h3 style={styles.modalTitle}>
+            {step === 'options' ? 'Dela veckoplanen' : 'Förhandsvisning'}
+          </h3>
+          <button onClick={onClose} style={styles.modalClose} aria-label="Stäng">
+            <X size={20} />
+          </button>
+        </div>
+
+        {step === 'options' && (
+          <>
+            <p style={styles.modalSubtitle}>Vad vill du dela?</p>
+            <div style={styles.modalList}>
+              <button
+                onClick={() => showPreview(buildMenuText())}
+                style={styles.shareOption}
+              >
+                <div style={styles.shareOptionTitle}>Bara matsedeln</div>
+                <div style={styles.shareOptionDesc}>Vilken rätt varje dag</div>
+              </button>
+              <button
+                onClick={() => showPreview(buildFullText())}
+                style={{
+                  ...styles.shareOption,
+                  ...(shoppingList.length === 0 ? styles.shareOptionDisabled : {}),
+                }}
+                disabled={shoppingList.length === 0}
+              >
+                <div style={styles.shareOptionTitle}>Matsedeln + inköpslista</div>
+                <div style={styles.shareOptionDesc}>
+                  {shoppingList.length === 0
+                    ? 'Inga ingredienser att dela'
+                    : `${shoppingList.length} ingredienser sammanslagna`}
+                </div>
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 'preview' && (
+          <>
+            <textarea
+              ref={textareaRef}
+              value={previewText}
+              readOnly
+              onFocus={(e) => e.target.select()}
+              style={styles.sharePreview}
+            />
+
+            {status === 'copied' && (
+              <div style={styles.shareInlineStatus}>
+                <Check size={16} strokeWidth={2.6} /> Kopierat!
+              </div>
+            )}
+            {status === 'error' && (
+              <div style={{ ...styles.shareInlineStatus, color: colors.danger }}>
+                Kunde inte kopiera automatiskt. Markera texten ovan och tryck Ctrl+C.
+              </div>
+            )}
+
+            <div style={styles.sharePreviewActions}>
+              <button onClick={() => setStep('options')} style={styles.secondaryBtn}>
+                <ArrowLeft size={16} /> Tillbaka
+              </button>
+              {navigator.share && (
+                <button onClick={handleShare} style={styles.secondaryBtn}>
+                  <Share2 size={16} /> Dela
+                </button>
+              )}
+              <button onClick={handleCopy} style={styles.primaryBtnLarge}>
+                <Check size={16} /> Kopiera
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ============== DAY PICKER MODAL ==============
 function DayPickerModal({ dayIndex, recipes, currentRecipeId, onSelect, onClose }) {
+  const [filterCategory, setFilterCategory] = useState(null); // null = all
+
+  // Only show categories that have at least one recipe
+  const availableCategories = CATEGORIES.filter(cat =>
+    recipes.some(r => (r.categories || []).includes(cat.id))
+  );
+
+  const filteredRecipes = filterCategory === null
+    ? recipes
+    : recipes.filter(r => (r.categories || []).includes(filterCategory));
+
+  const sortedRecipes = [...filteredRecipes].sort((a, b) =>
+    a.name.localeCompare(b.name, 'sv')
+  );
+
   return (
     <div style={styles.modalBackdrop} onClick={onClose}>
       <div style={styles.modalSheet} onClick={(e) => e.stopPropagation()}>
@@ -3062,6 +3253,31 @@ function DayPickerModal({ dayIndex, recipes, currentRecipeId, onSelect, onClose 
 
         <p style={styles.modalSubtitle}>Välj rätt för dagen</p>
 
+        <div style={styles.filterChipRow}>
+          <button
+            onClick={() => setFilterCategory(null)}
+            style={{
+              ...styles.filterChip,
+              ...(filterCategory === null ? styles.filterChipActive : {}),
+            }}
+          >
+            Alla
+          </button>
+          {availableCategories.map(c => (
+            <button
+              key={c.id}
+              onClick={() => setFilterCategory(c.id)}
+              style={{
+                ...styles.filterChip,
+                ...(filterCategory === c.id ? styles.filterChipActive : {}),
+              }}
+            >
+              <span>{c.emoji}</span>
+              <span>{c.name}</span>
+            </button>
+          ))}
+        </div>
+
         <div style={styles.modalList}>
           {currentRecipeId && (
             <button
@@ -3072,7 +3288,7 @@ function DayPickerModal({ dayIndex, recipes, currentRecipeId, onSelect, onClose 
               Ta bort från dagen
             </button>
           )}
-          {recipes.map(r => (
+          {sortedRecipes.map(r => (
             <button
               key={r.id}
               onClick={() => onSelect(r.id)}
@@ -3085,6 +3301,9 @@ function DayPickerModal({ dayIndex, recipes, currentRecipeId, onSelect, onClose 
               {currentRecipeId === r.id && <Check size={18} strokeWidth={2.4} />}
             </button>
           ))}
+          {sortedRecipes.length === 0 && (
+            <p style={styles.modalEmpty}>Inga recept i denna kategori.</p>
+          )}
         </div>
       </div>
     </div>
@@ -3205,6 +3424,130 @@ const styles = {
     fontSize: 13,
     fontWeight: 600,
     padding: '6px 4px',
+  },
+  weekActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+  },
+  iconBtn: {
+    background: colors.white,
+    border: `1px solid ${colors.line}`,
+    color: colors.ink,
+    padding: '8px 10px',
+    borderRadius: 10,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+  },
+  // Filter chips (in day picker modal)
+  filterChipRow: {
+    display: 'flex',
+    gap: 6,
+    overflowX: 'auto',
+    marginBottom: 14,
+    paddingBottom: 4,
+    WebkitOverflowScrolling: 'touch',
+    scrollbarWidth: 'none',
+  },
+  filterChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    background: colors.white,
+    border: `1px solid ${colors.line}`,
+    borderRadius: 20,
+    padding: '7px 12px',
+    fontSize: 13,
+    color: colors.inkSoft,
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+  },
+  filterChipActive: {
+    background: colors.ink,
+    borderColor: colors.ink,
+    color: colors.bg,
+    fontWeight: 600,
+  },
+  modalEmpty: {
+    textAlign: 'center',
+    padding: '24px 12px',
+    color: colors.inkMuted,
+    fontSize: 14,
+    margin: 0,
+  },
+  // Share modal
+  shareOption: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 3,
+    padding: '16px',
+    background: colors.white,
+    border: `1px solid ${colors.line}`,
+    borderRadius: 12,
+    textAlign: 'left',
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  },
+  shareOptionDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
+  },
+  shareOptionTitle: {
+    fontFamily: "'Fraunces', serif",
+    fontSize: 16,
+    fontWeight: 500,
+    color: colors.ink,
+  },
+  shareOptionDesc: {
+    fontSize: 13,
+    color: colors.inkMuted,
+  },
+  shareHint: {
+    fontSize: 12,
+    color: colors.inkMuted,
+    textAlign: 'center',
+    marginTop: 16,
+    marginBottom: 0,
+    fontStyle: 'italic',
+  },
+  sharePreview: {
+    width: '100%',
+    minHeight: 220,
+    padding: '14px 16px',
+    background: colors.white,
+    border: `1px solid ${colors.line}`,
+    borderRadius: 12,
+    fontFamily: "'Inter Tight', system-ui, sans-serif",
+    fontSize: 14,
+    lineHeight: 1.5,
+    color: colors.ink,
+    resize: 'vertical',
+    marginBottom: 12,
+    boxSizing: 'border-box',
+  },
+  shareInlineStatus: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    padding: '8px 12px',
+    background: colors.accentSoft,
+    color: colors.accent,
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
+    marginBottom: 12,
+  },
+  sharePreviewActions: {
+    display: 'flex',
+    gap: 8,
+    alignItems: 'stretch',
   },
   primaryBtn: {
     display: 'inline-flex',
